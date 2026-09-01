@@ -16,16 +16,17 @@
   input { flex:1; box-sizing:border-box; padding:12px; border-radius:10px; border:1px solid #30363d; background:#161b22; color:#e6edf3; font-size:16px; }
   .row { display:flex; gap:8px; margin:10px 0; align-items:center; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#8b949e; margin:20px 0 6px; }
-  .dev { display:flex; justify-content:space-between; align-items:center; background:#161b22; border:1px solid #21262d; border-radius:9px; padding:9px 11px; margin:6px 0; }
-  .dev code { font:13px ui-monospace,monospace; color:#e6edf3; }
+  .dev { display:flex; justify-content:space-between; align-items:center; background:#161b22; border:1px solid #21262d; border-radius:9px; padding:9px 11px; margin:6px 0; gap:8px; }
+  .dev .a { font:13px ui-monospace,monospace; }
+  .dev .s { font-size:12px; }
   .dev button { padding:6px 10px; font-size:13px; }
   #stat { font-size:13px; color:#8b949e; margin-top:10px; }
-  #log { margin-top:12px; background:#161b22; border:1px solid #30363d; border-radius:8px; padding:10px; font:12px/1.5 ui-monospace,monospace; white-space:pre-wrap; min-height:44px; max-height:32vh; overflow:auto; }
+  #log { margin-top:12px; background:#161b22; border:1px solid #30363d; border-radius:8px; padding:10px; font:12px/1.5 ui-monospace,monospace; white-space:pre-wrap; min-height:44px; max-height:30vh; overflow:auto; }
 </style>
 </head>
 <body>
 <h1>🐷 PoC-KBD control</h1>
-<div class="sub">Connect over Bluetooth, send text (the board types it into the paired PC over BLE-HID), and manage the board's paired devices. Chrome/Edge, https or localhost.</div>
+<div class="sub">Connect over Bluetooth, send text (typed into the paired PC over BLE-HID), and manage the board's paired devices. Chrome/Edge, https or localhost.</div>
 
 <button id="connect" style="width:100%">Connect to PoC-KBD</button>
 <div id="stat"></div>
@@ -38,7 +39,7 @@
 
   <h2>Board devices</h2>
   <div class="row">
-    <button id="list" class="sec" style="flex:1">List paired devices</button>
+    <button id="list" class="sec" style="flex:1">↻ Refresh</button>
     <button id="drop" class="warn">Drop links</button>
   </div>
   <div id="devices"></div>
@@ -53,7 +54,7 @@ const TX  = 'a0c50002-1234-4b0a-9c5e-000000000000';
 const $ = id => document.getElementById(id);
 function log(m){ const e=$('log'); e.textContent += m+'\n'; e.scrollTop = e.scrollHeight; }
 
-let rxCh = null;
+let rxCh = null, refreshTimer = null;
 
 async function sendCmd(s){
   if(!rxCh) return;
@@ -63,18 +64,20 @@ async function sendCmd(s){
 }
 
 function renderDevices(payload){
-  // "bonds:0=aa:bb..;1=cc:dd.." or "bonds:(none)"
+  // "bonds:idx|addr|conn;idx|addr|conn" or "bonds:(none)"
   const body = payload.slice('bonds:'.length);
   const box = $('devices'); box.innerHTML = '';
   if (body === '(none)' || body === '') { box.innerHTML = '<div class="sub">no paired devices</div>'; return; }
   for (const part of body.split(';')) {
-    const eq = part.indexOf('=');
-    const idx = part.slice(0, eq), addr = part.slice(eq + 1);
+    const [idx, addr, conn] = part.split('|');
     const row = document.createElement('div'); row.className = 'dev';
-    row.innerHTML = `<code>${addr}</code>`;
+    const st = conn === '1' ? '<span class="s" style="color:#3fb950">● connected</span>'
+                            : '<span class="s" style="color:#8b949e">○ bonded</span>';
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="a">${addr}</div>${st}`;
     const btn = document.createElement('button'); btn.className = 'warn'; btn.textContent = 'Forget';
-    btn.onclick = async () => { await sendCmd('__FORGET__:' + idx); setTimeout(()=>sendCmd('__BONDS__'), 400); };
-    row.appendChild(btn); box.appendChild(row);
+    btn.onclick = async () => { await sendCmd('__FORGET__:' + idx); setTimeout(() => sendCmd('__BONDS__'), 400); };
+    row.appendChild(left); row.appendChild(btn); box.appendChild(row);
   }
 }
 
@@ -83,7 +86,10 @@ $('connect').onclick = async () => {
   try {
     $('stat').textContent = 'requesting device…';
     const dev = await navigator.bluetooth.requestDevice({ filters:[{ name:'PoC-KBD' }], optionalServices:[SVC] });
-    dev.addEventListener('gattserverdisconnected', () => { $('stat').textContent = '⚠ disconnected'; $('app').hidden = true; $('connect').hidden = false; });
+    dev.addEventListener('gattserverdisconnected', () => {
+      $('stat').textContent = '⚠ disconnected'; $('app').hidden = true; $('connect').hidden = false;
+      if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    });
     const g = await dev.gatt.connect();
     const svc = await g.getPrimaryService(SVC);
     rxCh = await svc.getCharacteristic(RX);
@@ -95,7 +101,8 @@ $('connect').onclick = async () => {
     });
     $('stat').textContent = '✔ connected to ' + (dev.name || 'PoC-KBD');
     $('connect').hidden = true; $('app').hidden = false;
-    sendCmd('__BONDS__');           // auto-list on connect
+    sendCmd('__BONDS__');                                   // list now
+    refreshTimer = setInterval(() => sendCmd('__BONDS__'), 3000);   // auto-refresh
   } catch (e) { $('stat').textContent = '✖ ' + e.message; }
 };
 
